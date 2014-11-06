@@ -117,7 +117,7 @@ def random_goal(userdata, goal):
     # back up one meter
     goal.target_pose.pose.position.x = -1.0
     goal.target_pose.pose.orientation.w = 1.0
-
+    return goal
 
 if __name__ == '__main__':
     try:
@@ -129,8 +129,17 @@ if __name__ == '__main__':
         with sm:
             smach.StateMachine.add('Charging', Charging(),
                 transitions={'charged': 'Undocking'})
+
             smach.StateMachine.add('Undocking', Undocking(),
-                           transitions={'done': 'Docking'})
+                           transitions={'done': 'Navigating'})
+
+            smach.StateMachine.add('Navigating',
+                            smach_ros.SimpleActionState('move_base',
+                                    MoveBaseAction,
+                                    goal_cb=random_goal),
+                            transitions={'succeeded': 'Navigating',
+                                         'aborted': 'Navigating',
+                                         'preempted': 'Navigating')
 
             smach.StateMachine.add('Docking',
                             smach_ros.SimpleActionState('dock_drive_action',
