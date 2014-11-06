@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
 import rospy
-import actionlib
 import smach
 import smach_ros
 import math
@@ -9,41 +8,6 @@ from move_base_msgs.msg import MoveBaseAction,MoveBaseGoal
 from kobuki_msgs.msg import AutoDockingAction,AutoDockingGoal,PowerSystemEvent
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Pose,Twist
-
-class NavClient:
-    def __init__(self):
-        rospy.loginfo('Waiting for move_base action server')
-        self.client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
-        self.client.wait_for_server()
-        rospy.loginfo('move_base client ready')
-
-    def send_goal(self, goal):
-        rospy.loginfo("Sending navigation goal %s" % (str(goal)))
-        self.client.send_goal(goal)
-        self.client.wait_for_result()
-        result = self.client.get_result()
-        rospy.loginfo("Navigating done: %s" % (str(result)))
-        return result
-
-class DockClient:
-    def __init__(self):
-        rospy.loginfo('Waiting for auto docking action server')
-        self.client = actionlib.SimpleActionClient('dock_drive_action',
-                        AutoDockingAction)
-        self.client.wait_for_server()
-        rospy.loginfo('auto docking client ready')
-
-    def dock(self):
-        rospy.loginfo('docking')
-        goal = AutoDockingGoal()
-        self.client.send_goal(goal)
-        self.client.wait_for_result()
-        result = self.client.get_result()
-        rospy.loginfo("docking done: %s" % (str(result)))
-        return result
-
-    def undock(self):
-        rospy.loginfo('undocking (TODO)')
 
 # state machine:
 # top-level states:
@@ -109,20 +73,40 @@ class Undocking(smach.State):
         self.cmd_pub.publish(cmd)
         return 'done'
 
-def random_goal(userdata, goal):
-    goal = MoveBaseGoal()
-    goal.target_pose.header.frame_id = 'base_link'
-    goal.target_pose.header.stamp = rospy.Time.now()
-
-    # back up one meter
-    goal.target_pose.pose.position.x = -1.0
-    goal.target_pose.pose.orientation.w = 1.0
-    return goal
+def dict_to_pose(d):
+    pose = Pose()
+    pose.position.x = d['position']['x']
+    pose.position.y = d['position']['y']
+    pose.position.z = d['position']['z']
+    pose.orientation.x = d['orientation']['x']
+    pose.orientation.y = d['orientation']['y']
+    pose.orientation.z = d['orientation']['z']
+    pose.orientation.w = d['orientation']['w']
+    return pose
 
 if __name__ == '__main__':
     try:
         rospy.init_node('random_nav')
         rospy.loginfo('nav demo started')
+
+        dock_pose = rospy.get_param('~dock_pose')
+        dock_pose = dict_to_pose(dock_pose)
+        
+        nav_poses = rospy.get_param('~poses')
+        nav_poses = [dict_to_pose(p) for p in nav_poses]
+        rospy.loginfo("Dock pose: %s" % (str(dock_pose)))
+        rospy.loginfo("Navigation poses: %s" % (str(nav_poses)))
+
+        def random_goal(userdata, goal):
+            goal = MoveBaseGoal()
+            goal.target_pose.header.frame_id = 'base_link'
+            goal.target_pose.header.stamp = rospy.Time.now()
+        
+            # back up one meter
+            goal.target_pose.pose.position.x = -1.0
+            goal.target_pose.pose.orientation.w = 1.0
+            return goal
+
 
         sm = smach.StateMachine(['charged', 'done'])
 
@@ -131,7 +115,8 @@ if __name__ == '__main__':
                 transitions={'charged': 'Undocking'})
 
             smach.StateMachine.add('Undocking', Undocking(),
-                           transitions={'done': 'Navigating'})
+                           #transitions={'done': 'Navigating'})
+                           transitions={'done': 'Docking'})
 
             smach.StateMachine.add('Navigating',
                             smach_ros.SimpleActionState('move_base',
@@ -139,7 +124,7 @@ if __name__ == '__main__':
                                     goal_cb=random_goal),
                             transitions={'succeeded': 'Navigating',
                                          'aborted': 'Navigating',
-                                         'preempted': 'Navigating')
+                                         'preempted': 'Navigating'})
 
             smach.StateMachine.add('Docking',
                             smach_ros.SimpleActionState('dock_drive_action',
@@ -150,15 +135,6 @@ if __name__ == '__main__':
 
         sm.execute()
             
-
-        #navclient  = NavClient()
-        #dockclient = DockClient()
-
-
-        #dockclient.undock()
-        #navclient.send_goal(goal)
-        #dockclient.dock()
-
     except rospy.ROSInterruptException:
         pass
     rospy.loginfo('nav demo done')
