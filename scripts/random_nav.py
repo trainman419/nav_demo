@@ -4,6 +4,7 @@ import rospy
 import smach
 import smach_ros
 import math
+import random
 from move_base_msgs.msg import MoveBaseAction,MoveBaseGoal
 from kobuki_msgs.msg import AutoDockingAction,AutoDockingGoal,PowerSystemEvent
 from nav_msgs.msg import Odometry
@@ -25,7 +26,7 @@ from geometry_msgs.msg import Pose,Twist
 class Charging(smach.State):
     def __init__(self):
         smach.State.__init__(self, outcomes=['charged'])
-        self.charged = True
+        self.charged = False
         self.sub = rospy.Subscriber('/mobile_base/events/power_system',
             PowerSystemEvent, self.power_sub)
 
@@ -73,6 +74,29 @@ class Undocking(smach.State):
         self.cmd_pub.publish(cmd)
         return 'done'
 
+class BatteryMonitor(smach.State):
+    def __init__(self):
+        smach.State.__init__(self, outcomes=['low_battery'])
+        self.sub = rospy.Subscriber('/mobile_base/events/power_system',
+            PowerSystemEvent, self.power_sub)
+        self.low_battery = False
+
+    def power_sub(self, msg):
+        if msg.event == PowerSystemEvent.BATTERY_LOW or \
+            msg.event == PowerSystemEvent.BATTERY_CRITICAL:
+            rospy.loginfo("Low battery!")
+            self.low_battery = True
+        else:
+            rospy.loginfo("Battery OK")
+            self.low_battery = False
+
+    def execute(self, userdata):
+        # block here until we are charged
+        while not self.low_battery and not rospy.is_shutdown():
+            rospy.sleep(1)
+        # return charged
+        return 'low_battery'
+
 def dict_to_pose(d):
     pose = Pose()
     pose.position.x = d['position']['x']
@@ -91,6 +115,9 @@ if __name__ == '__main__':
 
         dock_pose = rospy.get_param('~dock_pose')
         dock_pose = dict_to_pose(dock_pose)
+        dock_goal = MoveBaseGoal()
+        dock_goal.target_pose.header.frame_id = 'map'
+        dock_goal.target_pose.pose = dock_pose
         
         nav_poses = rospy.get_param('~poses')
         nav_poses = [dict_to_pose(p) for p in nav_poses]
@@ -99,12 +126,14 @@ if __name__ == '__main__':
 
         def random_goal(userdata, goal):
             goal = MoveBaseGoal()
-            goal.target_pose.header.frame_id = 'base_link'
+            goal.target_pose.header.frame_id = 'map'
             goal.target_pose.header.stamp = rospy.Time.now()
         
             # back up one meter
-            goal.target_pose.pose.position.x = -1.0
-            goal.target_pose.pose.orientation.w = 1.0
+            #goal.target_pose.pose.position.x = -1.0
+            #goal.target_pose.pose.orientation.w = 1.0
+            goal.target_pose.pose = random.choice(nav_poses)
+            rospy.loginfo("Navigating to %s" % (str(goal.target_pose.pose)))
             return goal
 
 
@@ -115,8 +144,9 @@ if __name__ == '__main__':
                 transitions={'charged': 'Undocking'})
 
             smach.StateMachine.add('Undocking', Undocking(),
+                           transitions={'done': 'BatteryMonitor'})
                            #transitions={'done': 'Navigating'})
-                           transitions={'done': 'Docking'})
+                           #transitions={'done': 'Docking'})
 
             smach.StateMachine.add('Navigating',
                             smach_ros.SimpleActionState('move_base',
@@ -125,6 +155,17 @@ if __name__ == '__main__':
                             transitions={'succeeded': 'Navigating',
                                          'aborted': 'Navigating',
                                          'preempted': 'Navigating'})
+
+            smach.StateMachine.add('BatteryMonitor', BatteryMonitor(),
+                            transitions={'low_battery': 'Predock'})
+
+            smach.StateMachine.add('Predock',
+                            smach_ros.SimpleActionState('move_base',
+                                    MoveBaseAction,
+                                    goal=dock_goal),
+                            transitions={'succeeded': 'Docking',
+                                         'aborted': 'Predock',
+                                         'preempted': 'Predock'})
 
             smach.StateMachine.add('Docking',
                             smach_ros.SimpleActionState('dock_drive_action',
