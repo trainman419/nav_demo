@@ -55,7 +55,7 @@ class Undocking(smach.State):
 
     def odom_cb(self, msg):
         self.pose = msg.pose.pose
-        
+
     def execute(self, userdata):
         initial_pose = self.pose
         d = 0
@@ -76,7 +76,7 @@ class Undocking(smach.State):
 
 class BatteryMonitor(smach.State):
     def __init__(self):
-        smach.State.__init__(self, outcomes=['low_battery'])
+        smach.State.__init__(self, outcomes=['low_battery', 'battery_ok'])
         self.sub = rospy.Subscriber('/mobile_base/events/power_system',
             PowerSystemEvent, self.power_sub)
         self.low_battery = False
@@ -91,11 +91,10 @@ class BatteryMonitor(smach.State):
             self.low_battery = False
 
     def execute(self, userdata):
-        # block here until we are charged
-        while not self.low_battery and not rospy.is_shutdown():
-            rospy.sleep(1)
-        # return charged
-        return 'low_battery'
+        if self.low_battery:
+            return 'low_battery'
+        else:
+            return 'battery_ok'
 
 def dict_to_pose(d):
     pose = Pose()
@@ -118,7 +117,7 @@ if __name__ == '__main__':
         dock_goal = MoveBaseGoal()
         dock_goal.target_pose.header.frame_id = 'map'
         dock_goal.target_pose.pose = dock_pose
-        
+
         nav_poses = rospy.get_param('~poses')
         nav_poses = [dict_to_pose(p) for p in nav_poses]
         rospy.loginfo("Dock pose: %s" % (str(dock_pose)))
@@ -128,10 +127,8 @@ if __name__ == '__main__':
             goal = MoveBaseGoal()
             goal.target_pose.header.frame_id = 'map'
             goal.target_pose.header.stamp = rospy.Time.now()
-        
-            # back up one meter
-            #goal.target_pose.pose.position.x = -1.0
-            #goal.target_pose.pose.orientation.w = 1.0
+
+            # pick a random pose!
             goal.target_pose.pose = random.choice(nav_poses)
             rospy.loginfo("Navigating to %s" % (str(goal.target_pose.pose)))
             return goal
@@ -144,20 +141,23 @@ if __name__ == '__main__':
                 transitions={'charged': 'Undocking'})
 
             smach.StateMachine.add('Undocking', Undocking(),
-                           transitions={'done': 'BatteryMonitor'})
-                           #transitions={'done': 'Navigating'})
-                           #transitions={'done': 'Docking'})
+                           transitions={'done': 'RandomNav'})
 
-            smach.StateMachine.add('Navigating',
+            cc_nav = smach.Concurrence(outcomes=['low_battery','continue'],
+                            default_outcome='continue',
+                            outcome_map={'low_battery': {'BatteryMonitor':
+                                'low_battery'}})
+
+            with cc_nav:
+                smach.Concurrence.add('Navigating',
                             smach_ros.SimpleActionState('move_base',
                                     MoveBaseAction,
-                                    goal_cb=random_goal),
-                            transitions={'succeeded': 'Navigating',
-                                         'aborted': 'Navigating',
-                                         'preempted': 'Navigating'})
+                                    goal_cb=random_goal))
+                smach.Concurrence.add('BatteryMonitor', BatteryMonitor())
 
-            smach.StateMachine.add('BatteryMonitor', BatteryMonitor(),
-                            transitions={'low_battery': 'Predock'})
+            smach.StateMachine.add('RandomNav', cc_nav,
+                           transitions={'continue': 'RandomNav',
+                                        'low_battery': 'Predock'})
 
             smach.StateMachine.add('Predock',
                             smach_ros.SimpleActionState('move_base',
@@ -175,7 +175,7 @@ if __name__ == '__main__':
                                         'preempted': 'Docking'})
 
         sm.execute()
-            
+
     except rospy.ROSInterruptException:
         pass
     rospy.loginfo('nav demo done')
