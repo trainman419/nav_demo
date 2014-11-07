@@ -6,7 +6,7 @@ import smach_ros
 import math
 import random
 from move_base_msgs.msg import MoveBaseAction,MoveBaseGoal
-from kobuki_msgs.msg import AutoDockingAction,AutoDockingGoal,PowerSystemEvent
+from kobuki_msgs.msg import AutoDockingAction,AutoDockingGoal,PowerSystemEvent,SensorState
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Pose,Twist
 
@@ -27,15 +27,14 @@ class Charging(smach.State):
     def __init__(self):
         smach.State.__init__(self, outcomes=['charged'])
         self.charged = False
-        self.sub = rospy.Subscriber('/mobile_base/events/power_system',
-            PowerSystemEvent, self.power_sub)
+        self.sub = rospy.Subscriber('/mobile_base/sensors/core', SensorState,
+                        self.power_sub)
 
     def power_sub(self, msg):
-        if msg.event == PowerSystemEvent.CHARGE_COMPLETED:
+        if msg.battery >= 165:
             rospy.loginfo("Charging done")
             self.charged = True
         else:
-            rospy.loginfo("Charging")
             self.charged = False
 
     def execute(self, userdata):
